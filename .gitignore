@@ -37,3 +37,4 @@ out/
 .vscode/
 
 archive/
+graph.db
