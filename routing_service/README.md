@@ -1,5 +1,5 @@
-# SGRouter Graph Builder Service
-GAE service to build a graph describing Singapore's public transit system, export it to a SQLite database and upload it to Google Cloud Storage.
+# SGRouter Routing Service
+GAE service to find the shortest path using Singapore's public transit system. Graph created by graph_builder_service and uploaded to Google Cloud Storage in the form of an SQLite Database. Routing algorithm uses a modified Dijkstra algorithm.
 
 ## Technical Overview
 Language: Java11
@@ -19,7 +19,7 @@ First clone this subdirectory of the repository:
 ```
 git clone --depth 1 --filter=blob:none --sparse https://github.com/jloh02/SGRouter
 cd SGRouter
-git sparse-checkout set graph_builder_service
+git sparse-checkout set routing_service
 ```
 
 Alternatively, clone the entire repository:
@@ -28,4 +28,4 @@ git clone https://github.com/jloh02/SGRouter
 ```
 
 ## Wiki
-https://github.com/jloh02/SGRouter/wiki/Graph-Builder-Service-Overview
+https://github.com/jloh02/SGRouter/wiki/Routing-Service-Overview
