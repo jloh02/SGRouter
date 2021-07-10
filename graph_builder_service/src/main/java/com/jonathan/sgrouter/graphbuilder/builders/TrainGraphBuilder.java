@@ -42,9 +42,6 @@ public class TrainGraphBuilder implements Callable<ArrayList<Node>> {
     Collections.sort(stations);
     Collections.sort(exits);
 
-    // log.trace(stations);
-    // log.trace(exits);
-
     /*----------------------Generate train network adjacency list----------------------*/
     HashSet<String> srcList = new HashSet<>();
     ArrayList<Vertex> vtxList = new ArrayList<>();
@@ -54,17 +51,16 @@ public class TrainGraphBuilder implements Callable<ArrayList<Node>> {
 
     HashMap<String, BranchInfo> branches = new HashMap<>();
 
-    double freq = Utils.getFreq(GraphBuilderApplication.config.graphbuilder.train.getFreq());
-    freq *= 0.5;
     try {
       geoCalc = new GeodeticCalculator(CRS.parseWKT(Utils.getLatLonWKT()));
 
       setupData(stations, idxs, stationsBaseName, srcList);
-      setupBranches(branches, stations, idxs, mrtSpeed, mrtStopTime, lrtSpeed, lrtStopTime);
-      generateLinesAndBranches(
-          stations, idxs, vtxList, branches, mrtSpeed, mrtStopTime, lrtSpeed, lrtStopTime, freq);
+      setupAndGenerateBranches(
+          branches, stations, idxs, vtxList, mrtSpeed, mrtStopTime, lrtSpeed, lrtStopTime);
+      generateLines(
+          stations, idxs, vtxList, branches, mrtSpeed, mrtStopTime, lrtSpeed, lrtStopTime);
       generateInterchanges(stations, stationsBaseName, vtxList, walkSpeed);
-      generateLoops(stations, idxs, vtxList, mrtSpeed, mrtStopTime, lrtSpeed, lrtStopTime, freq);
+      generateLoops(stations, idxs, vtxList, mrtSpeed, mrtStopTime, lrtSpeed, lrtStopTime);
     } catch (FactoryException e) {
       log.error(e.getMessage());
     }
@@ -93,54 +89,18 @@ public class TrainGraphBuilder implements Callable<ArrayList<Node>> {
         walkSpeed);
 
     /*----------------------Update DB----------------------*/
+    double freq = Utils.getFreq(GraphBuilderApplication.config.graphbuilder.train.getFreq());
+    freq *= 0.5;
+    HashMap<String, Double> freqMap = new HashMap<>();
+    freqMap.put("train", freq);
+    sqh.addFreq(freqMap);
+
     sqh.addNodes(nodeList);
     sqh.addVertices(vtxList);
 
     log.debug("Train graph created");
 
     return exitNodeList;
-  }
-
-  // Branch setup (Refer to branch-logic.txt)
-  void setupBranches(
-      HashMap<String, BranchInfo> branches,
-      ArrayList<ShpNode> stations,
-      HashMap<String, Integer> idxs,
-      double mrtSpeed,
-      double mrtStopTime,
-      double lrtSpeed,
-      double lrtStopTime) {
-    for (BranchConfig bc : GraphBuilderApplication.config.graphbuilder.train.getBranches()) {
-      double sum = 0;
-      ArrayList<Double> cumu = new ArrayList<>();
-      ArrayList<String> branchNodes = new ArrayList<>();
-      cumu.add(0.0);
-      if (!idxs.containsKey(bc.getSrc()) || !idxs.containsKey(bc.getDes())) continue;
-      branchNodes.add(stations.get(idxs.get(bc.getSrc())).getId());
-      for (int i = idxs.get(bc.getSrc()) + 1; i <= idxs.get(bc.getDes()); i++) {
-        if (!Utils.isLRT(bc.getSrc()))
-          sum +=
-              BuilderUtils.getDistance(stations.get(i), stations.get(i - 1)) / mrtSpeed
-                  + mrtStopTime;
-        else
-          sum +=
-              BuilderUtils.getDistance(stations.get(i), stations.get(i - 1)) / lrtSpeed
-                  + lrtStopTime;
-        cumu.add(sum);
-        branchNodes.add(stations.get(i).getId());
-      }
-      branches.put(
-          bc.getBranchNode(),
-          new BranchInfo(
-              cumu,
-              branchNodes,
-              bc.getTransferTime(),
-              bc.isJoin(),
-              bc.getPostBranchService(),
-              bc.getBranchService()));
-      if (!bc.isJoin())
-        throw new UnsupportedOperationException("Split branches not implemented yet");
-    }
   }
 
   void setupData(
@@ -155,9 +115,67 @@ public class TrainGraphBuilder implements Callable<ArrayList<Node>> {
     }
   }
 
+  // Branch setup (Refer to branch-logic.txt)
+  void setupAndGenerateBranches(
+      HashMap<String, BranchInfo> branches,
+      ArrayList<ShpNode> stations,
+      HashMap<String, Integer> idxs,
+      ArrayList<Vertex> vtxList,
+      double mrtSpeed,
+      double mrtStopTime,
+      double lrtSpeed,
+      double lrtStopTime) {
+    for (BranchConfig bc : GraphBuilderApplication.config.graphbuilder.train.getBranches()) {
+      if (!idxs.containsKey(bc.getSrc()) || !idxs.containsKey(bc.getDes())) continue;
+      double branchDist =
+          Utils.isLRT(bc.getSrc())
+              ? BuilderUtils.getDistance(
+                          stations.get(idxs.get(bc.getBranchNode())),
+                          stations.get(idxs.get(bc.getSrc())))
+                      / lrtSpeed
+                  + lrtStopTime
+              : BuilderUtils.getDistance(
+                          stations.get(idxs.get(bc.getBranchNode())),
+                          stations.get(idxs.get(bc.getSrc())))
+                      / mrtSpeed
+                  + mrtStopTime;
+      branchDist += bc.getTransferTime();
+      vtxList.add(
+          new Vertex(
+              bc.getBranchNode(), bc.getSrc(), bc.getBranchService().descending, branchDist));
+      vtxList.add(
+          new Vertex(bc.getSrc(), bc.getBranchNode(), bc.getBranchService().ascending, branchDist));
+      for (int i = idxs.get(bc.getSrc()) + 1; i <= idxs.get(bc.getDes()); i++) {
+        double dist =
+            Utils.isLRT(bc.getSrc())
+                ? BuilderUtils.getDistance(stations.get(i), stations.get(i - 1)) / lrtSpeed
+                    + lrtStopTime
+                : BuilderUtils.getDistance(stations.get(i), stations.get(i - 1)) / mrtSpeed
+                    + mrtStopTime;
+
+        vtxList.add(
+            new Vertex(
+                stations.get(i).getId(),
+                stations.get(i - 1).getId(),
+                bc.getBranchService().descending,
+                dist));
+        vtxList.add(
+            new Vertex(
+                stations.get(i - 1).getId(),
+                stations.get(i).getId(),
+                bc.getBranchService().ascending,
+                dist));
+      }
+      branches.put(
+          bc.getBranchNode(),
+          new BranchInfo(bc.isJoin(), bc.getPostBranchService(), bc.getBranchService()));
+      if (!bc.isJoin())
+        throw new UnsupportedOperationException("Split branches not implemented yet");
+    }
+  }
+
   // Linear Train Vertex Creation: Generates vertices on graph which are "straight lines"
-  // Branch Creation: Refer to branch-logic.txt
-  void generateLinesAndBranches(
+  void generateLines(
       ArrayList<ShpNode> stations,
       HashMap<String, Integer> idxs,
       ArrayList<Vertex> vtxList,
@@ -165,22 +183,17 @@ public class TrainGraphBuilder implements Callable<ArrayList<Node>> {
       double mrtSpeed,
       double mrtStopTime,
       double lrtSpeed,
-      double lrtStopTime,
-      double freq) {
+      double lrtStopTime) {
+
     int startIdx = 0;
-    double sumDist = 0.0;
 
     BranchInfo currBranch = null;
-    double preBranchDistance = 0;
-
-    ArrayList<Double> cumDist =
-        new ArrayList<>(); // Cumulative sum array to calculate distance between 2 points
-    cumDist.add(0.0);
     while (stations
             .get(startIdx)
             .getId()
             .matches(GraphBuilderApplication.config.graphbuilder.train.getExcludeLine())
         && startIdx < stations.size()) startIdx++;
+    int skipped = 0;
     for (int i = startIdx + 1; i < stations.size(); i++) {
       // Exclude loops from linear vertex creation
       if (stations
@@ -193,9 +206,6 @@ public class TrainGraphBuilder implements Callable<ArrayList<Node>> {
                 .matches(GraphBuilderApplication.config.graphbuilder.train.getExcludeLine())
             && i + 1 < stations.size()) i++;
         startIdx = i + 1;
-        sumDist = 0.0;
-        cumDist = new ArrayList<>();
-        cumDist.add(0.0);
         currBranch = null;
         i++;
         continue;
@@ -203,8 +213,9 @@ public class TrainGraphBuilder implements Callable<ArrayList<Node>> {
 
       if (branches.containsKey(stations.get(i).getId())) {
         currBranch = branches.get(stations.get(i).getId());
-        preBranchDistance = sumDist;
       }
+
+      int j = i - 1 - skipped;
 
       // Add vertex if same lines, else reset line
       if (stations
@@ -213,70 +224,30 @@ public class TrainGraphBuilder implements Callable<ArrayList<Node>> {
           .substring(0, 2)
           .equals(stations.get(startIdx).getId().substring(0, 2))) {
 
-        double edgeDist = BuilderUtils.getDistance(stations.get(i - 1), stations.get(i));
-        if (Utils.isLRT(stations.get(i).getId())) sumDist += edgeDist / lrtSpeed + lrtStopTime;
-        else sumDist += edgeDist / mrtSpeed + mrtStopTime;
-
-        cumDist.add(sumDist);
+        double edgeDist = BuilderUtils.getDistance(stations.get(j), stations.get(i));
+        if (Utils.isLRT(stations.get(i).getId())) edgeDist = edgeDist / lrtSpeed + lrtStopTime;
+        else edgeDist = edgeDist / mrtSpeed + mrtStopTime;
 
         if (GraphBuilderApplication.config
             .graphbuilder
             .train
             .getInvalidStations()
-            .contains(stations.get(i).getId())) continue;
-        for (int j = startIdx; j < i; j++) {
-          if (GraphBuilderApplication.config
-              .graphbuilder
-              .train
-              .getInvalidStations()
-              .contains(stations.get(j).getId())) continue;
+            .contains(stations.get(i).getId())) {
+          skipped++;
+          continue;
+        } else skipped = 0;
 
-          double dist = cumDist.get(i - startIdx) - cumDist.get(j - startIdx) + freq;
-          TrainServiceName serv =
-              currBranch == null
-                  ? BuilderUtils.getService(stations.get(i), stations.get(j))
-                  : currBranch.getPostBranchService();
-          vtxList.add(
-              new Vertex(stations.get(i).getId(), stations.get(j).getId(), serv.descending, dist));
-          vtxList.add(
-              new Vertex(stations.get(j).getId(), stations.get(i).getId(), serv.ascending, dist));
-        }
-
-        if (currBranch != null && currBranch.isJoin()) {
-          for (int j = 0; j < currBranch.cumDist.size(); j++) {
-            if (GraphBuilderApplication.config
-                .graphbuilder
-                .train
-                .getInvalidStations()
-                .contains(stations.get(j).getId())) continue;
-
-            double dist =
-                currBranch.cumDist.get(j)
-                    + sumDist
-                    - preBranchDistance
-                    + freq
-                    + currBranch.getTransferTime();
-
-            TrainServiceName serv = currBranch.getBranchService();
-            vtxList.add(
-                new Vertex(
-                    stations.get(i).getId(),
-                    stations.get(idxs.get(currBranch.nodes.get(j))).getId(),
-                    serv.descending,
-                    dist));
-            vtxList.add(
-                new Vertex(
-                    stations.get(idxs.get(currBranch.nodes.get(j))).getId(),
-                    stations.get(i).getId(),
-                    serv.ascending,
-                    dist));
-          }
-        }
+        TrainServiceName serv =
+            currBranch == null
+                ? BuilderUtils.getService(stations.get(i), stations.get(j))
+                : currBranch.getPostBranchService();
+        vtxList.add(
+            new Vertex(
+                stations.get(i).getId(), stations.get(j).getId(), serv.descending, edgeDist));
+        vtxList.add(
+            new Vertex(stations.get(j).getId(), stations.get(i).getId(), serv.ascending, edgeDist));
       } else {
         startIdx = i;
-        sumDist = 0.0;
-        cumDist = new ArrayList<>();
-        cumDist.add(0.0);
         currBranch = null;
       }
     }
@@ -320,8 +291,7 @@ public class TrainGraphBuilder implements Callable<ArrayList<Node>> {
       double mrtSpeed,
       double mrtStopTime,
       double lrtSpeed,
-      double lrtStopTime,
-      double freq) {
+      double lrtStopTime) {
     for (String[] loop : GraphBuilderApplication.config.graphbuilder.train.getLoops()) {
       if (loop.length != 3 && loop.length != 4) {
         log.error("Invalid loop: " + Arrays.toString(loop));
@@ -336,149 +306,48 @@ public class TrainGraphBuilder implements Callable<ArrayList<Node>> {
       TrainServiceName tsn = serviceMap.get(loop[1].substring(0, 2));
 
       if (loop.length == 3) {
-
-        // Build loop node list and cumulative sum array
-        ArrayList<ShpNode> nodes = new ArrayList<>();
-        nodes.add(stations.get(idxs.get(loop[0])));
-        double sumDist = 0.0;
-        ArrayList<Double> cumDist = new ArrayList<>();
-        cumDist.add(0.0);
-        sumDist +=
-            BuilderUtils.getDistance(
-                        stations.get(idxs.get(loop[0])), stations.get(idxs.get(loop[1])))
-                    / speed
-                + stopTime;
-        cumDist.add(sumDist);
-        nodes.add(stations.get(idxs.get(loop[1])));
         for (int i = idxs.get(loop[1]) + 1; i <= idxs.get(loop[2]); i++) {
-          sumDist += BuilderUtils.getDistance(stations.get(i), stations.get(i - 1));
-          cumDist.add(sumDist);
-          nodes.add(stations.get(i));
-        }
-        sumDist +=
-            BuilderUtils.getDistance(
-                        stations.get(idxs.get(loop[0])), stations.get(idxs.get(loop[2])))
-                    / speed
-                + stopTime;
-
-        // Use cumulative sum array for forward and backward loop traversal (Take lesser)
-        double halfLoopDist = sumDist * 0.5;
-        for (int i = 1; i < nodes.size(); i++) {
-          for (int j = 0; j < i; j++) {
-            double dist = cumDist.get(i) - cumDist.get(j);
-            if (dist > halfLoopDist) dist = sumDist - dist;
-            vtxList.add(
-                new Vertex(
-                    nodes.get(i).getId(), nodes.get(j).getId(), tsn.descending, dist + freq));
-            vtxList.add(
-                new Vertex(nodes.get(j).getId(), nodes.get(i).getId(), tsn.ascending, dist + freq));
-          }
+          double dist = BuilderUtils.getDistance(stations.get(i), stations.get(i - 1));
+          vtxList.add(
+              new Vertex(
+                  stations.get(i).getId(), stations.get(i - 1).getId(), tsn.descending, dist));
+          vtxList.add(
+              new Vertex(
+                  stations.get(i - 1).getId(), stations.get(i).getId(), tsn.ascending, dist));
         }
       } else if (loop.length == 4) {
-        // Build straight node list and cumulative sum array
-        ArrayList<ShpNode> straightNodes = new ArrayList<>();
-
-        double sumDist = 0.0;
-        ArrayList<Double> straightCumDist = new ArrayList<>();
-        straightCumDist.add(0.0);
-        straightNodes.add(stations.get(idxs.get(loop[0])));
         for (int i = idxs.get(loop[0]) + 1; i <= idxs.get(loop[1]); i++) {
-          sumDist +=
+          double dist =
               BuilderUtils.getDistance(stations.get(i), stations.get(i - 1)) / speed + stopTime;
-
-          straightCumDist.add(sumDist);
-          straightNodes.add(stations.get(i));
-        }
-        double straightSumDist = sumDist;
-
-        // Draw vertices for straight portion
-        for (int i = 0; i < straightNodes.size() - 1; i++) {
-          for (int j = i + 1; j < straightNodes.size(); j++) {
-            double dist = straightCumDist.get(j) - straightCumDist.get(i);
-            vtxList.add(
-                new Vertex(
-                    straightNodes.get(i).getId(),
-                    straightNodes.get(j).getId(),
-                    tsn.straightAscending,
-                    dist));
-            vtxList.add(
-                new Vertex(
-                    straightNodes.get(j).getId(),
-                    straightNodes.get(i).getId(),
-                    tsn.straightDescending,
-                    dist));
-          }
+          vtxList.add(
+              new Vertex(
+                  stations.get(i).getId(),
+                  stations.get(i - 1).getId(),
+                  tsn.straightAscending,
+                  dist));
+          vtxList.add(
+              new Vertex(
+                  stations.get(i - 1).getId(),
+                  stations.get(i).getId(),
+                  tsn.straightDescending,
+                  dist));
         }
 
-        // Build loop node list and cumulative sum array
-        ArrayList<ShpNode> loopNodes = new ArrayList<>();
-
-        loopNodes.add(stations.get(idxs.get(loop[1])));
-        sumDist = 0.0;
-        ArrayList<Double> loopCumDist = new ArrayList<>();
-        loopCumDist.add(0.0);
-        sumDist +=
-            BuilderUtils.getDistance(
-                        stations.get(idxs.get(loop[1])), stations.get(idxs.get(loop[2])))
-                    / speed
-                + stopTime;
-        loopCumDist.add(sumDist);
-        loopNodes.add(stations.get(idxs.get(loop[2])));
+        ShpNode a = stations.get(idxs.get(loop[1]));
+        ShpNode b = stations.get(idxs.get(loop[2]));
+        double transdist = BuilderUtils.getDistance(a, b) / speed + stopTime;
+        vtxList.add(new Vertex(a.getId(), b.getId(), tsn.ascending, transdist));
+        vtxList.add(new Vertex(b.getId(), a.getId(), tsn.descending, transdist));
 
         for (int i = idxs.get(loop[2]) + 1; i <= idxs.get(loop[3]); i++) {
-          sumDist +=
+          double dist =
               BuilderUtils.getDistance(stations.get(i), stations.get(i - 1)) / speed + stopTime;
-          loopCumDist.add(sumDist);
-          loopNodes.add(stations.get(i));
-        }
-        sumDist +=
-            BuilderUtils.getDistance(
-                        stations.get(idxs.get(loop[3])), stations.get(idxs.get(loop[1])))
-                    / speed
-                + stopTime;
-
-        // Use cumulative sum array for forward and backward loop traversal (Take lesser)
-        double halfLoopDist = sumDist * 0.5;
-        for (int i = 0; i < loopNodes.size(); i++) {
-          String servInc = tsn.ascending, servDec = tsn.descending;
-          for (int j = i + 1; j < loopNodes.size(); j++) {
-            double dist = loopCumDist.get(j) - loopCumDist.get(i);
-            // Only applicable for straight-loop vertices
-            if (i == 0 && dist > halfLoopDist) {
-              dist = sumDist - dist;
-              servInc = tsn.descending;
-              servDec = tsn.ascending;
-            }
-
-            vtxList.add(
-                new Vertex(
-                    loopNodes.get(i).getId(), loopNodes.get(j).getId(), servInc, dist + freq));
-            vtxList.add(
-                new Vertex(
-                    loopNodes.get(j).getId(), loopNodes.get(i).getId(), servDec, dist + freq));
-
-            // Join loops to straight
-            if (i == 0) { // loop[1]
-
-              for (int k = 0;
-                  k < straightNodes.size() - 1;
-                  k++) { // Last straight node belongs to loop
-                double straightDist = straightSumDist - straightCumDist.get(k);
-                vtxList.add(
-                    new Vertex(
-                        loopNodes.get(j).getId(),
-                        straightNodes.get(k).getId(),
-                        servDec,
-                        dist + straightDist + freq));
-                vtxList.add(
-                    new Vertex(
-                        straightNodes.get(k).getId(),
-                        loopNodes.get(j).getId(),
-                        servInc,
-                        dist + straightDist + freq));
-              }
-            }
-          }
+          vtxList.add(
+              new Vertex(
+                  stations.get(i).getId(), stations.get(i - 1).getId(), tsn.ascending, dist));
+          vtxList.add(
+              new Vertex(
+                  stations.get(i - 1).getId(), stations.get(i).getId(), tsn.descending, dist));
         }
       }
     }
@@ -495,6 +364,11 @@ public class TrainGraphBuilder implements Callable<ArrayList<Node>> {
       ArrayList<Node> nodeList,
       double walkSpeed) {
     for (ShpNode exit : exits) {
+      if (GraphBuilderApplication.config
+          .graphbuilder
+          .train
+          .getInvalidStations()
+          .contains(exit.getId())) continue;
       exitStationIds.add(exit.getId());
 
       String[] exitNum = exit.getName().split("EXIT ");
