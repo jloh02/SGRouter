@@ -1,0 +1,6 @@
+[submodule "graph_builder"]
+	path = graph_builder
+	url = https://github.com/jloh02/SGRouter-Graph-Builder
+[submodule "routing_dijkstra"]
+	path = routing_dijkstra
+	url = https://github.com/jloh02/SGRouter-Routing-Dijkstra
