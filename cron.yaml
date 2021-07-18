@@ -1,5 +1,5 @@
 cron:
-- description: "Update graph.db"
-  target: graph-builder
-  url: /74004ad79c7fcb8f4a22450b6f372c240bd09f49
-  schedule: every 6 hours synchronized
+# - description: "Update graph.db"
+#   target: graph-builder
+#   url: /74004ad79c7fcb8f4a22450b6f372c240bd09f49
+#   schedule: every 6 hours synchronized
