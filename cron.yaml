@@ -1,5 +1,10 @@
 cron:
-# - description: "Update graph.db"
+# - description: "Update graph"
 #   target: graph-builder
 #   url: /74004ad79c7fcb8f4a22450b6f372c240bd09f49
-#   schedule: every 6 hours synchronized
+#   timezone: Asia/Singapore
+#   schedule: every friday 02:30
+#   retry_parameters:
+#     job_age_limit: 1h
+#     min_backoff_seconds: 5
+#     max_backoff_seconds: 5
